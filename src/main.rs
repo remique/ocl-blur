@@ -1,5 +1,9 @@
+extern crate image;
 extern crate ocl;
-use ocl::{builders::DeviceSpecifier, ProQue};
+
+use ocl::enums::{ImageChannelDataType, ImageChannelOrder, MemObjectType};
+use ocl::{builders::DeviceSpecifier, Image, ProQue};
+use std::path::Path;
 
 fn create_matrix(radius: i32) {
     let width = (radius * 2) as usize;
@@ -35,43 +39,95 @@ fn create_matrix(radius: i32) {
     // Now convert it to the float* ( so [f32] slice )
 }
 
+fn load_image(path: &str) -> image::ImageBuffer<image::Rgba<u8>, Vec<u8>> {
+    let load = image::open(&Path::new(path)).unwrap();
+    let img = load.to_rgba();
+
+    img
+}
+
 fn main() -> ocl::Result<()> {
-    // fn main() {
     let src = r#"
-    __kernel void add(__global float* buffer, float scalar) {
-        buffer[get_global_id(0)] += scalar;
+    __constant sampler_t sampler_const =
+    CLK_NORMALIZED_COORDS_FALSE |
+    CLK_ADDRESS_NONE |
+    CLK_FILTER_NEAREST;
+
+    __kernel void copy_img(read_only image2d_t source, write_only image2d_t dest) {
+        // buffer[get_global_id(0)] += scalar;
+        //
+        // Get current pixel
+        const int2 pixel_id = (int2)(get_global_id(0), get_global_id(1));
+
+        // Read the pixel into float4 value
+        const float4 rgba = read_imagef(source, sampler_const, pixel_id);
+
+        // Copy original contents into the output
+        write_imagef(dest, pixel_id, (float4)(rgba.x, rgba.y, rgba.z, 1.0));
     }
     "#;
+
+    // Load source image (host)
+    let source_img = load_image("test.jpg");
+    let dims = source_img.dimensions();
 
     let pro_que = ProQue::builder()
         .src(src)
         .device(DeviceSpecifier::TypeFlags(ocl::flags::DEVICE_TYPE_GPU))
-        .dims(1 << 6) // 64 dec
+        .dims(&dims) // 64 dec
         .build()?;
 
     let buffer = pro_que.create_buffer::<f32>()?;
 
-    let kernel = pro_que
-        .kernel_builder("add")
-        .arg(&buffer) // float* buffer
-        .arg(10.0f32) // float scalar
-        .build()?;
+    // This will be the output image (host)
+    let mut result: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+        image::ImageBuffer::new(dims.0, dims.1);
 
-    println!("Context: {:?}", pro_que.context().devices()[0].name());
-    println!("Device: {:?}", pro_que.device().name());
+    let cl_source = Image::<u8>::builder()
+        .channel_order(ImageChannelOrder::Rgba)
+        .channel_data_type(ImageChannelDataType::UnormInt8)
+        .image_type(MemObjectType::Image2d)
+        .dims(&dims)
+        .flags(
+            ocl::flags::MEM_READ_ONLY
+                | ocl::flags::MEM_HOST_WRITE_ONLY
+                | ocl::flags::MEM_COPY_HOST_PTR,
+        )
+        .queue(pro_que.queue().clone())
+        .copy_host_slice(&source_img)
+        .build()
+        .unwrap();
+
+    let cl_destination = Image::<u8>::builder()
+        .channel_order(ImageChannelOrder::Rgba)
+        .channel_data_type(ImageChannelDataType::UnormInt8)
+        .image_type(MemObjectType::Image2d)
+        .dims(&dims)
+        .flags(
+            ocl::flags::MEM_WRITE_ONLY
+                | ocl::flags::MEM_HOST_READ_ONLY
+                | ocl::flags::MEM_COPY_HOST_PTR,
+        )
+        .queue(pro_que.queue().clone())
+        .copy_host_slice(&result)
+        .build()
+        .unwrap();
+
+    let kernel = pro_que
+        .kernel_builder("copy_img")
+        .arg(&cl_source)
+        .arg(&cl_destination)
+        .build()?;
 
     unsafe {
         kernel.enq()?;
     }
 
-    let mut vec = vec![0.0f32; buffer.len()];
-    buffer.read(&mut vec).enq()?;
+    cl_destination.read(&mut result).enq()?;
+
+    result.save(&Path::new("result.png")).unwrap();
 
     Ok(())
-
-    //     println!("The value at index [{}] is now '{}'!", 0, vec[0]);
-    //     println!("The value at index [{}] is now '{}'!", 1, vec[1]);
-    //     println!("The value at index [{}] is now '{}'!", 2, vec[2]);
 
     // create_matrix(2);
 
