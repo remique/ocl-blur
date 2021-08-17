@@ -63,7 +63,6 @@ fn cpu_blur(
     let dims = source.dimensions();
     let now_cpu = Instant::now();
 
-    println!("[CPU] Starting");
     let img = image::ImageBuffer::from_fn(dims.0, dims.1, |x, y| {
         let mut r = 0.0;
         let mut g = 0.0;
@@ -95,15 +94,14 @@ fn cpu_blur(
 }
 
 fn main() -> ocl::Result<()> {
+    let now_gpu = Instant::now();
     // Load source file and make it a string
     let src_file = fs::read("src/kernel.cl")?;
     let src_string = String::from_utf8(src_file).unwrap();
 
     // Load source image (host)
-    let source_img = load_image("test.jpg");
+    let source_img = load_image("images/test.jpg");
     let dims = source_img.dimensions();
-
-    println!("[GPU] Starting");
 
     let pro_que = ProQue::builder()
         .src(src_string)
@@ -148,7 +146,7 @@ fn main() -> ocl::Result<()> {
         .build()
         .unwrap();
 
-    let blur_kernel_radius = 20;
+    let blur_kernel_radius = 5;
     let vec_blur_kernel = create_matrix(blur_kernel_radius);
     let blur_kernel_length = vec_blur_kernel.len();
     let blur_kernel_buffer = Buffer::builder()
@@ -157,8 +155,6 @@ fn main() -> ocl::Result<()> {
         .len(blur_kernel_length)
         .copy_host_slice(&vec_blur_kernel)
         .build()?;
-
-    let now_gpu = Instant::now();
 
     // Set up the kernel
     let kernel = pro_que
@@ -180,11 +176,13 @@ fn main() -> ocl::Result<()> {
     println!("[GPU] Elapsed: {}", now_gpu.elapsed().as_secs_f64());
 
     // Save the image
-    result.save(&Path::new("result_gpu.png")).unwrap();
+    result.save(&Path::new("images/result_gpu.png")).unwrap();
 
     // CPU blur for benchmarking
     let cpu_result = cpu_blur(source_img, vec_blur_kernel, blur_kernel_radius);
-    cpu_result.save(&Path::new("result_cpu.png")).unwrap();
+    cpu_result
+        .save(&Path::new("images/result_cpu.png"))
+        .unwrap();
 
     Ok(())
 }
